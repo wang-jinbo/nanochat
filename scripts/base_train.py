@@ -77,6 +77,8 @@ parser.add_argument("--sample-every", type=int, default=2000, help="sample from 
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
+parser.add_argument("--gradpower", default=1.0, type=float, help="grad power in AdamWpower.")
+
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
 # -----------------------------------------------------------------------------
@@ -97,7 +99,7 @@ print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
 
 # wandb logging init
 use_dummy_wandb = args.run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=args.run, config=user_config)
+wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=args.run+f"p={args.gradpower}", config=user_config)
 
 # Flash Attention status
 from nanochat.flash_attention import USE_FA3
@@ -532,9 +534,21 @@ while True:
         if is_ddp_initialized():
             for v in scaler._found_inf_per_device(optimizer).values():
                 dist.all_reduce(v, op=dist.ReduceOp.MAX)
+        if args.gradpower != 1.0:
+            for param in model.parameters():
+                if param.grad is not None:
+                    g = param.grad
+                    modified_g = torch.sign(g) * torch.pow(torch.abs(g), args.gradpower)
+                    param.grad = modified_g
         scaler.step(optimizer)
         scaler.update()
     else:
+        if args.gradpower != 1.0:
+            for param in model.parameters():
+                if param.grad is not None:
+                    g = param.grad
+                    modified_g = torch.sign(g) * torch.pow(torch.abs(g), args.gradpower)
+                    param.grad = modified_g
         optimizer.step()
     model.zero_grad(set_to_none=True)
     train_loss_f = train_loss.item() # .item() is a CPU-GPU sync point

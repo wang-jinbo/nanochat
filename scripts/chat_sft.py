@@ -66,6 +66,7 @@ parser.add_argument("--chatcore-max-sample", type=int, default=24, help="max pro
 # Data mixture
 parser.add_argument("--mmlu-epochs", type=int, default=3, help="number of epochs of MMLU in training mixture (teaches Multiple Choice)")
 parser.add_argument("--gsm8k-epochs", type=int, default=4, help="number of epochs of GSM8K in training mixture (teaches Math and Tool Use)")
+parser.add_argument("--gradpower", default=1.0, type=float, help="grad power in AdamWpower.")
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
@@ -86,7 +87,7 @@ else:
 
 # wandb logging init
 use_dummy_wandb = args.run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-sft", name=args.run, config=user_config)
+wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-sft", name=args.run+f"p={args.gradpower}", config=user_config)
 
 # Flash Attention status
 if not HAS_FA3:
@@ -451,9 +452,21 @@ while True:
         if is_ddp_initialized():
             for v in scaler._found_inf_per_device(optimizer).values():
                 dist.all_reduce(v, op=dist.ReduceOp.MAX)
+        if args.gradpower != 1.0:
+            for param in model.parameters():
+                if param.grad is not None:
+                    g = param.grad
+                    modified_g = torch.sign(g) * torch.pow(torch.abs(g), args.gradpower)
+                    param.grad = modified_g
         scaler.step(optimizer)
         scaler.update()
     else:
+        if args.gradpower != 1.0:
+            for param in model.parameters():
+                if param.grad is not None:
+                    g = param.grad
+                    modified_g = torch.sign(g) * torch.pow(torch.abs(g), args.gradpower)
+                    param.grad = modified_g
         optimizer.step()
     model.zero_grad(set_to_none=True)
     synchronize()
